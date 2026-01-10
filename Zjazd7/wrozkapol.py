@@ -5,7 +5,6 @@ import tensorflow as tf
 import keras_tuner as kt
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
-import os
 
 def add_harmonics(df, column_name):
     values = df[column_name].values
@@ -60,10 +59,10 @@ def main():
     patcher = TimeSeriesPatcher(history_size, args.n)
     X, y = patcher.create_sequences(scaled_data)
 
-    results = {}
     last_history = df[args.column].values[-50:] # Do wykresu: ostatnie 50 pkt historycznych
+    results = {}
+    scores = {} # Słownik na wyniki MAE
 
-    # Trenowanie i Predykcja
     for m_type in ['LSTM', 'Dense']:
         print(f"\n--- Optymalizacja: {m_type} ---")
         tuner = kt.RandomSearch(
@@ -72,21 +71,30 @@ def main():
             directory='tuner_results', project_name=f'wrozka_{m_type}'
         )
         tuner.search(X, y, epochs=10, validation_split=0.2, verbose=1)
+        
+        best_trial = tuner.oracle.get_best_trials(1)[0]
+        scores[m_type] = best_trial.score # val_loss (MSE)
+        
         model = tuner.get_best_models(num_models=1)[0]
         
         last_window = scaled_data[-history_size:].reshape(1, history_size, X.shape[2])
         pred_scaled = model.predict(last_window, verbose=0)
         
-        # Inwersja skalowania (tylko dla pierwszej kolumny)
+        # Inwersja skalowania
         dummy = np.zeros((args.n, len(features_names)))
         dummy[:, 0] = pred_scaled[0]
         results[m_type] = scaler.inverse_transform(dummy)[:, 0]
 
+    
+    best_m = 'LSTM' if scores['LSTM'] < scores['Dense'] else 'Dense'
+    print(f"\nZwycięzca: {best_m} (Best val_loss: {scores[best_m]:.4f})")
+    
+    pd.DataFrame(results[best_m], columns=['Prediction']).to_csv(args.result, index=False)
+    print(f"Predykcje modelu {best_m} zapisano w {args.result}")
+
     plt.figure(figsize=(12, 6))
-    # Dane historyczne (ostatnie 50)
     plt.plot(range(50), last_history, label='Historia', color='black', linewidth=2)
     
-    # Predykcje (zaczynają się tam, gdzie kończy historia)
     future_range = range(50, 50 + args.n)
     plt.plot(future_range, results['LSTM'], 'o--', label='Predykcja LSTM', color='blue')
     plt.plot(future_range, results['Dense'], 's--', label='Predykcja Dense', color='orange')
@@ -97,9 +105,7 @@ def main():
     plt.legend()
     plt.grid(True)
     
-    pd.DataFrame(results['LSTM'], columns=['Prediction']).to_csv(args.result, index=False)
-    
-    print(f"\nPokazuję wykres... Wyniki LSTM zapisano w {args.result}")
+    print(f"\nPokazuję wykres...")
     plt.show()
 
 if __name__ == "__main__":
